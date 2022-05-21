@@ -1,0 +1,380 @@
+import numpy as np
+from astropy.io import ascii
+from astropy.table import Table, vstack
+from scipy.interpolate import interp1d
+from scipy.special import erf
+
+# initial mass function
+def imf(Mini, alpha=-2.35):
+	return Mini**alpha
+
+# magnitude of added flux
+def addmag(mag1, mag2):
+	mag=mag1-2.5*np.log10(1+10**((mag1-mag2)/2.5))
+	return mag
+
+def get_bin_isochrone(iso, bands, massRatio, maxStarMass=300.0):
+
+	# magnitude interpolation
+	mag_interp={}
+	for bd in bands: mag_interp[bd]=interp1d(iso['Mini'], iso[bd+'mag'])
+
+	# maximum and minimum stellar masses
+	mass_max, mass_min = np.amax(iso['Mini']), np.amin(iso['Mini'])
+
+	# the lower binary isochrone in which the primary star is still alive
+	biniso_lower=iso[['logAge', 'Mini']+[bd+'mag' for bd in bands]]
+	for ii in range(len(biniso_lower)):
+		M2=iso[ii]['Mini']*massRatio
+		if M2>=mass_min:
+			# the secondary star is bright enough
+			for bd in bands:
+				biniso_lower[ii][bd+'mag']=round(addmag(iso[ii][bd+'mag'], mag_interp[bd](M2)), 3)
+
+	# the upper binary isochrone in which the primary star has already exploded
+	if massRatio<mass_min/maxStarMass:
+		# mass ratio is too small, no observable secondary stars
+		flag_upper=False
+	else:
+		flag_upper=True
+		Mpri=iso['Mini']/massRatio
+		idx=(Mpri>mass_max) & (Mpri<=maxStarMass)
+		if np.sum(idx)>0:
+			# the primary star has exploded, but the seondary star is observable
+			biniso_upper=iso[idx][['logAge', 'Mini']+[bd+'mag' for bd in bands]]
+			biniso_upper['Mini']=np.around(biniso_upper['Mini']/massRatio, 10)
+		else:
+			flag_upper=False
+	if flag_upper==False:
+		biniso_upper=Table(names=['logAge', 'Mini']+[bd+'mag' for bd in bands])
+
+	# increase sampling at the breaking point between the lower and upper isochrones
+	if flag_upper:
+		M1_point=mass_max+1e-6
+		M2_point=M1_point*massRatio
+		if M1_point<np.amin(biniso_upper['Mini']) and M2_point>=mass_min:
+			biniso_point=Table([[iso[0]['logAge']], [M1_point]], names=['logAge', 'Mini'])
+			for bd in bands:
+				biniso_point[bd+'mag']=np.around(mag_interp[bd](M2_point), 3)
+			biniso_upper=vstack([biniso_point, biniso_upper])
+
+	# the combined binary isochrone
+	biniso=vstack([biniso_lower, biniso_upper])
+	return (biniso, biniso_lower, biniso_upper)
+
+def get_isochrones(iso, bands,
+	logAge_min=6.60, logAge_max=8.00, logAge_bin=0.01,
+	binary_fit=True,
+	massRatio_min=0.00, massRatio_max=1.001, massRatio_bin=0.05,
+	maxStarMass=300.0):
+
+	# select only the important columns
+	subiso=iso[['logAge', 'Mini']+[bd+'mag' for bd in bands]]
+
+	# get single isochrones
+	sinpts={}
+	sinpts['logAge']=np.around(np.arange(logAge_min, logAge_max, logAge_bin), 3)
+	sinpts['numAge']=len(sinpts['logAge'])
+	sinpts['iso']=[subiso[np.abs(subiso['logAge']-LA0)<1e-4] for LA0 in LAs]
+	sinpts['mass_min']=[np.amin(sinpts['iso'][ii]['Mini']) for ii in range(sinpts['numAge'])]
+	sinpts['mass_max']=[np.amax(sinpts['iso'][ii]['Mini']) for ii in range(sinpts['numAge'])]
+	sinpts['interp']={}
+	for bd in bands:
+		sinpts['interp'][bd]=[interp1d(sinpts['iso'][ii]['Mini'], sinpts['iso'][ii][bd+'mag']) for ii in range(sinpts['numAge'])]
+
+#	print('single-star isochrones obtained. log(t/yr) = ', LAs)
+#	pts_sin=
+#	single={}
+#	single['iso']=pts_sin
+
+	if binary_fit==False:
+		# return only the single-star isochrones
+		return (LAs, pts_sin)
+	else:
+		# get binary isochrones
+		qqs=np.around(np.arange(massRatio_min, massRatio_max, massRatio_bin), 3)
+		qqs=qqs[qqs<=1.0]
+		print('binary-star isochrones obtained. mass ratio = ', qqs)
+		pts_bin=[]
+		pts_bin_lower=[]
+		pts_bin_upper=[]
+		for qq0 in qqs:
+			pts_bin_qq=[]
+			pts_bin_lower_qq=[]
+			pts_bin_upper_qq=[]
+			for iLA in range(len(LAs)):
+				(biniso, biniso_lower, biniso_upper)=\
+					get_bin_isochrone(pts_sin[iLA], bands=bands, massRatio=qq0, maxStarMass=maxStarMass)
+				pts_bin_qq.append(biniso)
+				pts_bin_lower_qq.append(biniso_lower)
+				pts_bin_upper_qq.append(biniso_upper)
+			pts_bin.append(pts_bin_qq)
+			pts_bin_lower.append(pts_bin_lower_qq)
+			pts_bin_upper.append(pts_bin_upper_qq)
+		return (LAs, qqs, pts_sin, pts_bin, pts_bin_lower, pts_bin_upper)
+
+# pre-calculations
+#minMini=[] # minimum mass
+#maxMini=[] # maximum mass
+#Ntot=[] # total IMF
+#interp={} # mass-magnitude interpolations
+#for bd in bds: interp[bd]=[]
+#for iLA in range(len(LAs)):
+#	pt=pts[iLA]
+#	minMini.append(np.amin(pt['Mini']))
+#	maxMini.append(np.amax(pt['Mini']))
+#	(aa1, _)=integrate.quad(imf,
+#							a=np.amin(pt['Mini']),
+#							b=np.amax(pt['Mini']))
+#	Ntot.append(aa1)
+#	for bd in bds:
+#		interp[bd].append(interp1d(pt['Mini'], pt[bd+'mag']))
+
+##Av and LA grids
+#xys=[]
+#for iAv in range(len(Avs)):
+#	for iLA in range(len(LAs)):
+#		xys.append((iAv, iLA))
+
+##likelihood
+#def like1(Msyn, mag, err, det):
+#	if det==1:
+#		LL=1.0/np.sqrt(2*np.pi)/err*np.exp(-0.5*((Msyn-mag)/err)**2)
+#	else:
+#		LL=0.5+0.5*erf((Msyn-mag)/np.sqrt(2)/err)
+#	return LL
+
+
+#import os
+#import time
+#import numpy as np
+#import matplotlib.pyplot as plt
+#from astropy.io import ascii
+#from scipy.interpolate import interp1d
+#from scipy import integrate
+#from multiprocessing import Pool
+#import pysunnc as ps
+#
+##extinction and age bins
+#Avbin=0.20
+#LAbin=0.02
+#Avs=np.around(np.arange(0.0, 4.0+1e-3, Avbin), 2)
+#LAs=np.around(np.arange(6.6, 7.5+1e-3, LAbin), 2)
+
+#	#single-star fit
+#	def sinworker(jj):
+#		(iAv, iLA)=xys[jj]
+#		obsmag={}
+#		obserr={}
+#		obsdet={}
+#		for bd in bds:
+#			obsmag[bd]=tabF[ii]['mag'+bd]-(cef31[bd]*3.1*galTab[ll]['ebv']+cef0[bd]*Avs[iAv]+galTab[ll]['DM'])
+#			obserr[bd]=tabF[ii]['err'+bd]
+#			obsdet[bd]=tabF[ii]['det'+bd]
+#		def priorMini(Mini):
+#			return imf(Mini)/Ntot[iLA]
+#		def sinfunc(Mini):
+#			LL=1.0
+#			for bd in bds:
+#				synmag=interp[bd][iLA](Mini)
+#				LL=LL*like1(synmag, obsmag[bd], obserr[bd], obsdet[bd])
+#			return LL*priorMini(Mini)
+#		tmp=integrate.quad(sinfunc, a=minMini[iLA], b=maxMini[iLA], \
+#			points=[5, 10, 20, 50, 100, maxMini[iLA]], full_output=1)
+#		psin=tmp[0]
+#		return psin
+#
+#	flag=0
+#	if flag==1:
+#		for ii in range(len(tabF)):
+#			if ii>0: continue
+#			time1=time.time()
+#			filename=dr+snTab[ll]['name']+'/sin'+str(tabF[ii]['ID'])+'.dat'
+#			if os.path.exists(filename): continue
+#
+#			pool=Pool(processes=51)
+#			psintab=pool.map(sinworker, range(len(Avs)*len(LAs)))
+#			pool.close()
+#			pool.join()
+#
+#			num=0
+#			postsin=np.zeros((len(Avs), len(LAs)), dtype=float)
+#			for iAv in range(len(Avs)):
+#				for iLA in range(len(LAs)):
+#					postsin[iAv, iLA]=psintab[num]
+#					num=num+1
+#			evidence=np.sum(postsin)*Avbin*LAbin
+#			postsin=postsin/evidence
+#			ps.pdump(postsin, filename)
+#
+#			print(filename,
+#				'single fit:', tabF[ii]['ID'], len(tabF),
+#				'time:', round(time.time()-time1, 2))
+#
+#		print()
+#		print('complete!')
+#
+#	#binary-star fitting
+#	def binworker(jj):
+#		(iAv, iLA)=xys[jj]
+#		obsmag={}
+#		obserr={}
+#		obsdet={}
+#		for bd in bds:
+#			obsmag[bd]=tabF[ii]['mag'+bd]-(cef31[bd]*3.1*galTab[ll]['ebv']+cef0[bd]*Avs[iAv]+galTab[ll]['DM'])
+#			obserr[bd]=tabF[ii]['err'+bd]
+#			obsdet[bd]=tabF[ii]['det'+bd]
+#		def priorMini(Mini):
+#			return imf(Mini)/Ntot[iLA]
+#		def binfunc(Mini):
+#			Mpri=Mini
+#			Apri=(Mpri<=maxMini[iLA] and Mpri>=minMini[iLA])
+#			if Apri:
+#				primags={}
+#				for bd in bds:
+#					primags[bd]=interp[bd][iLA](Mpri)
+#			nqq=10
+#			BB=0.0
+#			for kk in range(nqq):
+#				qq=(kk+0.5)*(1.0/nqq)
+#				Msec=Mini*qq
+#				Asec=(Msec<=maxMini[iLA] and Msec>=minMini[iLA])
+#				if Asec:
+#					secmags={}
+#					for bd in bds:
+#						secmags[bd]=interp[bd][iLA](Msec)
+#				if Apri==False and Asec==False:
+#					LL=0.0
+#				else:
+#					LL=1.0
+#					for bd in bds:
+#						if Apri==True and Asec==False:
+#							synmag=primags[bd]
+#						if Apri==False and Asec==True:
+#							synmag=secmags[bd]
+#						if Apri and Asec:
+#							synmag=ps.addmag(primags[bd], secmags[bd])
+#						LL=LL*like1(synmag, obsmag[bd], obserr[bd], obsdet[bd])
+#				BB=BB+LL*(1.0/nqq)
+#			return BB*priorMini(Mini)
+#		tmp=integrate.quad(binfunc, a=minMini[iLA], b=300.0, \
+#			points=[5, 10, 20, 50, 100, maxMini[iLA]], full_output=1)
+#		pbin=tmp[0]
+#		return pbin
+#
+#	flag=0
+#	if flag==1:
+#		for ii in range(len(tabF)):
+##			if ii>10: continue
+#			time1=time.time()
+#			filename=dr+snTab[ll]['name']+'/bin'+str(tabF[ii]['ID'])+'.dat'
+#			if os.path.exists(filename): continue
+#
+#			pool=Pool(processes=51)
+#			pbintab=pool.map(binworker, range(len(Avs)*len(LAs)))
+#			pool.close()
+#			pool.join()
+#
+#			num=0
+#			postbin=np.zeros((len(Avs), len(LAs)), dtype=float)
+#			for iAv in range(len(Avs)):
+#				for iLA in range(len(LAs)):
+#					postbin[iAv, iLA]=pbintab[num]
+#					num=num+1
+#			evidence=np.sum(postbin)*Avbin*LAbin
+#			postbin=postbin/evidence
+#			ps.pdump(postbin, filename)
+#
+#			print(filename,
+#				'binary fit:', tabF[ii]['ID'], len(tabF),
+#				'time:', round(time.time()-time1, 2))
+#
+#		print()
+#		print('complete!')
+#
+### binary-star fitting{{{
+##def binworker(jj):
+##	(iAv, iLA)=xys[jj]
+##	obsmag={}
+##	obserr={}
+##	obsdet={}
+##	for bd in bds:
+##		obsmag[bd]=tabF[ii]['mag'+bd]-(cef0[bd]*Avs[iAv]+bspars['DM'])
+##		obserr[bd]=tabF[ii]['err'+bd]
+##		obsdet[bd]=tabF[ii]['det'+bd]
+##	def priorMini(Mini):
+##		return imf(Mini)/Ntot[iLA]
+##	def binlikelihood(Mini, qq):
+##		Mpri=Mini
+##		Msec=Mini*qq
+##		Apri=(Mpri<=maxMini[iLA] and Mpri>=minMini[iLA])
+##		Asec=(Msec<=maxMini[iLA] and Msec>=minMini[iLA])
+##		if Apri==False and Asec==False:
+##			return 0.0
+##		else:
+##			LL=1.0
+##			for bd in bds:
+##				if Apri==True and Asec==False:
+##					synmag=interp[bd][iLA](Mpri)
+##				if Apri==False and Asec==True:
+##					synmag=interp[bd][iLA](Msec)
+##				if Apri and Asec:
+##					primag=interp[bd][iLA](Mpri)
+##					secmag=interp[bd][iLA](Msec)
+##					synmag=ps.addmag(primag, secmag)
+##				LL=LL*like1(synmag, obsmag[bd], obserr[bd], obsdet[bd])
+##			return LL
+##	def binfunc(Mini):
+##		nqq=50
+##		BB=0.0
+##		for kk in range(nqq):
+##			qq=(kk+0.5)*(1.0/nqq)
+##			pp=binlikelihood(Mini, qq)
+##			BB=BB+pp*(1.0/nqq)
+##		return BB*priorMini(Mini)
+##	tmp=integrate.quad(binfunc, a=minMini[iLA], b=300.0, full_output=1)
+##	pbin=tmp[0]
+##	return pbin
+#
+## binary-star fitting
+##def binworker(jj):
+##	(iAv, iLA)=xys[jj]
+##	obsmag={}
+##	obserr={}
+##	obsdet={}
+##	for bd in bds:
+##		obsmag[bd]=tabF[ii]['mag'+bd]-(cef0[bd]*Avs[iAv]+bspars['DM'])
+##		obserr[bd]=tabF[ii]['err'+bd]
+##		obsdet[bd]=tabF[ii]['det'+bd]
+##	nqq=10
+##	pbin=0.0
+##	for kk in range(nqq):
+##		qq=(kk+0.5)*(1.0/nqq)
+##		def priorMini(Mini):
+##			return imf(Mini)/Ntot[iLA]
+##		def binlikelihood(Mini):
+##			Mpri=Mini
+##			Msec=Mini*qq
+##			Apri=(Mpri<=maxMini[iLA] and Mpri>=minMini[iLA])
+##			Asec=(Msec<=maxMini[iLA] and Msec>=minMini[iLA])
+##			if Apri==False and Asec==False:
+##				return 0.0
+##			else:
+##				LL=1.0
+##				for bd in bds:
+##					if Apri==True and Asec==False:
+##						synmag=interp[bd][iLA](Mpri)
+##					if Apri==False and Asec==True:
+##						synmag=interp[bd][iLA](Msec)
+##					if Apri and Asec:
+##						primag=interp[bd][iLA](Mpri)
+##						secmag=interp[bd][iLA](Msec)
+##						synmag=ps.addmag(primag, secmag)
+##					LL=LL*like1(synmag, obsmag[bd], obserr[bd], obsdet[bd])
+##				return LL
+##		def binfunc(Mini):
+##			return binlikelihood(Mini)*priorMini(Mini)
+##		tmp=integrate.quad(binfunc, a=minMini[iLA], b=maxMini[iLA], full_output=1)
+##		BB=tmp[0]
+##		pbin=pbin+BB*(1.0/nqq)
+##	return pbin}}}
