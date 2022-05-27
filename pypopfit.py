@@ -37,6 +37,7 @@ def get_isochrones(iso, LAs, bands=None, DM=None, gal_Av=None, gal_coeff=None):
 		if len(pt0)==0:
 			print('isochrone of log(t/yr) =', LAs[iLA], 'is not provided in the isochrone table')
 			return -1
+		pt0['logAge']=np.around(pt0['logAge'], 3)
 		for bd in bands: pt0[bd+'mag']=np.around(pt0[bd+'mag']+gal_coeff[bd]*gal_Av+DM, 3)
 		pts.append(pt0)
 
@@ -107,6 +108,7 @@ def cut_interp_isochrone(pt0, interp0, bands=None, obs=None, dmag_min=0.02):
 				return pt0[idxGood], pt0 # return a zero-length table
 	pt_upper=pt0[pt0['Mini']>=Mlow] # upper branch
 	pt_lower=pt0[pt0['Mini']<Mlow] # lower branch: single stars too faint to match the observations
+	pt_upper=vstack([pt_lower[-1], pt_upper]) # link the two branches
 
 	# minimum sampling
 	dmags={bd: np.maximum(dmag_min, obs[bd+'err']) for bd in bands}
@@ -126,9 +128,9 @@ def cut_interp_isochrone(pt0, interp0, bands=None, obs=None, dmag_min=0.02):
 	idx=(pt_lower['Mini']>=Mlow)
 	if np.any(idx):
 		newpt2=vstack([pt_lower[~idx],
-			interp_isochrone(pt_lower[idx], interp0, bands=bands, dmags=dmags), newpt1])
+			interp_isochrone(pt_lower[idx], interp0, bands=bands, dmags=dmags)[:-1], newpt1])
 	else:
-		newpt2=vstack([pt_lower, newpt1])
+		newpt2=vstack([pt_lower[:-1], newpt1])
 #}}}#
 	return newpt1, newpt2
 
@@ -144,8 +146,8 @@ def get_ST_synmags(newpt1, newpt2, bands, maxM0, AA0, BB0, CC0,
 	# get synthetic magnitudes for single and binary stars
 	synmags_sin={bd: np.array(newpt1[bd+'mag']) for bd in bands}
 	synmags_bin={}
+	mass1, mass2 = np.meshgrid(np.array(newpt1['Mini']), np.array(newpt2['Mini']))
 	for bd in bands:
-		mass1, mass2 = np.meshgrid(np.array(newpt1['Mini']), np.array(newpt2['Mini']))
 		synmags_bin[bd]=addmag(*np.meshgrid(np.array(newpt1[bd+'mag']),
 			np.array(newpt2[bd+'mag']), sparse=True))
 		synmags_bin[bd][mass2>mass1]=99.999
